@@ -1,0 +1,13 @@
+{
+	"title"		:	"Wire FPGA",
+	"type"		:	"tool",
+	"tags"		:	[ "build" ],
+	"description":	"An extension to Wiremod, adding a FPGA chip",
+	"ignore"	:
+	[
+		".git*",
+		".gitignore",
+		"license",
+		"readme.md",
+	]
+}
