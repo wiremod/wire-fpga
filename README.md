@@ -1,4 +1,4 @@
-# Wire-FPGA
+# Wire-FPGA (in development - do not use on your server)
 
 Adds a field programmable gate array for use with Wiremod (https://github.com/wiremod/wire)
 
