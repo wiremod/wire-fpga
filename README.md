@@ -2,6 +2,8 @@
 
 Adds a field programmable gate array for use with Wiremod (https://github.com/wiremod/wire)
 
+### This addon is very much still in development, it's expected to be done by February
+
 Comes with a visual node editor, and offers a nice step between pure wire gates and E2,
 but also makes stuff like custom CPUs and other complicated gate devices possible, since the performance hit is several times lower than 
 multiple gates being used to make the same device.
