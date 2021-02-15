@@ -594,8 +594,7 @@ function ENT:Run(changedNodes)
   -----------------------------------------
   local activeNodes = {}
   local activeNodesQueue = {}
-  local nodesInQueue = {}
-  local nodeQueue = {}
+  local nodeStack = {}
 
   --Find out which nodes will be visited
   for nodeId, node in pairs(self.Nodes) do
@@ -611,7 +610,7 @@ function ENT:Run(changedNodes)
     --propergate output value to inputs
     if node.connections then
       for outputNum, connections in pairs(node.connections) do
-        for k, connection in pairs(connections) do
+        for _, connection in pairs(connections) do
           --add connected nodes to queue (and active nodes)
           if activeNodes[connection[1]] == false then
             table.insert(activeNodesQueue, connection[1])
@@ -628,29 +627,22 @@ function ENT:Run(changedNodes)
     end
     if gate.alwaysActive then
       activeNodes[nodeId] = true
-      table.insert(nodeQueue, nodeId)
+      table.insert(nodeStack, nodeId)
       nodesInQueue[nodeId] = true
     end
   end
   --activeNodes = {0,0,0,1,1,1,1,1,1}
   if self.Debug then print(table.ToString(activeNodes, "activeNodes", false)) end
 
-  --Initialize nodesInQueue set
-  for nodeId, node in pairs(self.Nodes) do
-    nodesInQueue[nodeId] = false
-  end
-
-  --Initialize nodeQueue with changed inputs
+  --Initialize nodeStack with changed inputs
   for k, id in pairs(changedNodes) do
-    table.insert(nodeQueue, id)
-    nodesInQueue[id] = true
+    table.insert(nodeStack, id)
   end
 
   --Initialize nodesVisited set
   local nodesVisited = {}
 
-  --nodeQueue = {changedNodes[1], ... changedNodes[n]}
-  --nodesInQueue = {0, 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0}
+  --nodeStack = {changedNodes[1], ... changedNodes[n]}
   --nodesVisited = {}
 
   if self.Debug then 
@@ -665,7 +657,7 @@ function ENT:Run(changedNodes)
   local loopCount = 0
   local loopDetectionNodeId = nil
   local loopDetectionSize = 0
-  while #nodeQueue > 0 do
+  while #nodeStack > 0 do
     loopCount = loopCount + 1
     if loopCount > 50000 then
       self.timepeak = SysTime() - bench
@@ -675,15 +667,12 @@ function ENT:Run(changedNodes)
     end
     if self.Debug then 
       print()
-      print(table.ToString(nodeQueue, "nodeQueue", false))
-      print(table.ToString(nodesInQueue, "nodesInQueue", false))
+      print(table.ToString(nodeStack, "nodeStack", false))
       print(table.ToString(nodesVisited, "nodesVisited", false))
     end
 
-    local nodeId = table.remove(nodeQueue, 1)
+    local nodeId = nodeStack[#nodeStack]
     local node = self.Nodes[nodeId]
-
-    --print(table.ToString(node.connections, "node.connections", false))
 
     --get gate
     local gate = getGate(node)
@@ -696,52 +685,55 @@ function ENT:Run(changedNodes)
     elseif gate.isConstant then
       value = {node.value}
     else
-      if nodeId == loopDetectionNodeId and #nodeQueue == loopDetectionSize then
+      if nodeId == loopDetectionNodeId and #nodeStack == loopDetectionSize then
         --infinite loop...
         self:ThrowExecutionError("stuck in infinite loop", "infinite loop")
         break
       end
 
-      --neverActive gates don't wait for their input gates to finish
-      --if !gate.neverActive then
-        local executeLater = false
-        --if input hasnt arrived, send this node to the back of the queue
-        for inputId, connection in pairs(self.NodeGetsInputFrom[nodeId]) do
-          nodeId2 = connection[1]
-          outputNum = connection[2]
+      
+      local executeLater = false
+      --if input hasnt arrived, send this node to the back of the queue
+      for inputId, connection in pairs(self.NodeGetsInputFrom[nodeId]) do
+        nodeId2 = connection[1]
+        outputNum = connection[2]
 
-          --if node hasnt been visited yet and its going to be visited
-          if not nodesVisited[nodeId2] and activeNodes[nodeId2] then
-            executeLater = true
-            if loopDetectionNodeId == nil then
-              loopDetectionNodeId = nodeId
-              loopDetectionSize = #nodeQueue
-            end
-            break
-          end
-        end
-        --skip node
-        if executeLater then
-          --add connected nodes to queue
-          -- if node.connections then
-          --   for outputNum, connections in pairs(node.connections) do
-          --     for k, connection in pairs(connections) do
-          --       if nodesInQueue[connection[1]] == false then
-          --         table.insert(nodeQueue, connection[1])
-          --         nodesInQueue[connection[1]] = true
-          --       end
-          --     end
-          --   end
+        --if node hasnt been visited yet and its going to be visited
+        if not nodesVisited[nodeId2] and activeNodes[nodeId2] then
+          executeLater = true
+          -- if loopDetectionNodeId == nil then
+          --   loopDetectionNodeId = nodeId
+          --   loopDetectionSize = #nodeQueue
           -- end
-          -- send this node to the back of the queue (potential infinite looping???)
-          table.insert(nodeQueue, nodeId)
-          continue
+          break
         end
-      --end
+      end
+      --skip node
+      if executeLater then
+        --add connected nodes to queue
+        -- if node.connections then
+        --   for outputNum, connections in pairs(node.connections) do
+        --     for k, connection in pairs(connections) do
+        --       if nodesInQueue[connection[1]] == false then
+        --         table.insert(nodeQueue, connection[1])
+        --         nodesInQueue[connection[1]] = true
+        --       end
+        --     end
+        --   end
+        -- end
+        -- send this node to the back of the queue (potential infinite looping???)
+        --table.insert(nodeQueue, nodeId)
+    
+        --add inputs to stack
+        
+        --###########
+
+        continue
+      end
 
       if self.Debug then print(table.ToString(self.Values[nodeId], "", false)) end
 
-      loopDetectionNodeId = nil
+      --loopDetectionNodeId = nil
 
       --output logic
       if gate.isOutput then
@@ -758,7 +750,9 @@ function ENT:Run(changedNodes)
     --for future reference, we've visited this node
     nodesVisited[nodeId] = true
 
-    self:PropagateAndAddToQueue(node, value, nodeQueue, nodesInQueue)
+    --Remove node from stack
+    table.remove(nodeStack)
+    self:PropagateAndAddToStack(node, value, nodeStack)
   end
 
   --postcycle hook
@@ -812,7 +806,7 @@ function ENT:Propagate(node, value)
   end
 end
 
-function ENT:PropagateAndAddToQueue(node, value, nodeQueue, nodesInQueue)
+function ENT:PropagateAndAddToStack(node, value, nodeStack)
   if node.connections then
     for outputNum, connections in pairs(node.connections) do
       for k, connection in pairs(connections) do
@@ -823,13 +817,13 @@ function ENT:PropagateAndAddToQueue(node, value, nodeQueue, nodesInQueue)
         local valueHasChanged = value[outputNum] == self.Values[toNode][toInput]
         self.Values[toNode][toInput] = value[outputNum]
 
-        --if value has changed, add connected nodes to queue
-        --else, just mark them as visited
+        --add connected nodes to queue
         if not nodesInQueue[connection[1]] then
-          if valueHasChanged then
-            table.insert(nodeQueue, connection[1])
+          if not valueHasChanged then
+
           end
-          nodesInQueue[connection[1]] = true
+          
+          table.insert(nodeStack, connection[1])
         end
       end
     end
