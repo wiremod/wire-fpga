@@ -723,16 +723,16 @@ function ENT:Run(changedNodes)
         --skip node
         if executeLater then
           --add connected nodes to queue
-          if node.connections then
-            for outputNum, connections in pairs(node.connections) do
-              for k, connection in pairs(connections) do
-                if nodesInQueue[connection[1]] == false then
-                  table.insert(nodeQueue, connection[1])
-                  nodesInQueue[connection[1]] = true
-                end
-              end
-            end
-          end
+          -- if node.connections then
+          --   for outputNum, connections in pairs(node.connections) do
+          --     for k, connection in pairs(connections) do
+          --       if nodesInQueue[connection[1]] == false then
+          --         table.insert(nodeQueue, connection[1])
+          --         nodesInQueue[connection[1]] = true
+          --       end
+          --     end
+          --   end
+          -- end
           -- send this node to the back of the queue (potential infinite looping???)
           table.insert(nodeQueue, nodeId)
           continue
@@ -820,11 +820,15 @@ function ENT:PropagateAndAddToQueue(node, value, nodeQueue, nodesInQueue)
         toInput = connection[2]
 
         --send values to nodes
+        local valueHasChanged = value[outputNum] == self.Values[toNode][toInput]
         self.Values[toNode][toInput] = value[outputNum]
 
-        --add connected nodes to queue
-        if nodesInQueue[connection[1]] == false then
-          table.insert(nodeQueue, connection[1])
+        --if value has changed, add connected nodes to queue
+        --else, just mark them as visited
+        if not nodesInQueue[connection[1]] then
+          if valueHasChanged then
+            table.insert(nodeQueue, connection[1])
+          end
           nodesInQueue[connection[1]] = true
         end
       end
