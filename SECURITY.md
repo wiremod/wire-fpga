@@ -1,0 +1,6 @@
+# Cache/Options directory for Visual Studio 2015 and higher
+.vs/
+
+# vscode
+.vscode/*
+.history
