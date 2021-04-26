@@ -32,6 +32,7 @@ if SERVER then
 	util.AddNetworkString("FPGA_Upload")
 	util.AddNetworkString("FPGA_Download")
 	util.AddNetworkString("FPGA_OpenEditor")
+	util.AddNetworkString("FPGA_Convert")
 
 	-- Reset
 	function TOOL:Reload(trace)
@@ -64,8 +65,106 @@ if SERVER then
 	end
 
 	function TOOL:BuildGateTable(baseEntity)
-		-- remember to put "getConnectedEntities" and "buildFilter" into "E2Lib" before using this (todo: name buildFilter something better than this)
-		local contraption = E2Lib.getConnectedEntities(baseEntity, E2Lib.getConnectedEntities_buildFilter({"all"}))
+		-- Remove these functions when Wiremod exposes it via E2Lib!
+		local function buildFilter(filters)
+			local function caps(text)
+				local capstext = text:sub(1,1):upper() .. text:sub(2):lower()
+				if capstext == "Nocollide" then return "NoCollide" end
+				if capstext == "Advballsocket" then return "AdvBallsocket" end
+				return capstext
+			end
+			local filter_lookup = {}
+		
+			if #filters == 0 or (#filters == 1 and filters[1] == "") then -- No filters given, same as "All"
+				filter_lookup.Constraints = true
+				filter_lookup.Parented = true
+				filter_lookup.Wires = true
+			else
+				for i=1,#filters do
+					local filter = filters[i]
+					if type(filter) == "string" then
+						local bool = true
+						if string.sub(filter,1,1) == "-" or string.sub(filter,1,1) == "!" then -- check for negation
+							bool = false
+							filter = string.sub(filter,2)
+						end
+		
+						filter = caps(filter)
+		
+						-- correct potential mistakes
+						if filter == "Constraint" then filter = "Constraints"
+						elseif filter == "Parent" or filter == "Parents" then filter = "Parented"
+						elseif filter == "Wire" then filter = "Wires" end
+		
+						if filter == "All" then
+							if bool then -- "all" can't be negated
+								filter_lookup.Constraints = true
+								filter_lookup.Parented = true
+								filter_lookup.Wires = true
+							end
+						else
+							filter_lookup[filter] = bool
+						end
+					end
+				end
+			end
+		
+			return filter_lookup
+		end
+		local function checkFilter(constraintType,filter_lookup)
+			if filter_lookup.Constraints -- check if we allow all constraints
+				and not (filter_lookup[constraintType] == false) -- but also if this specific constraint hasn't been negated
+				then return true end
+		
+			return filter_lookup[constraintType] == true -- check if this specific constraint has been added to the filter
+		end
+		local getConnectedEntities
+		local function getConnectedEx(e, filter_lookup, result, already_added)
+			if IsValid(e) and not already_added[e] then
+				getConnectedEntities(e, filter_lookup, result, already_added)
+			end
+		end
+		getConnectedEntities = function(ent, filter_lookup, result, already_added)
+			result = result or {}
+			already_added = already_added or {}
+		
+			result[#result+1] = ent
+			already_added[ent] = true
+		
+			if filter_lookup then
+				if filter_lookup.Parented then -- add parented entities
+					getConnectedEx(ent:GetParent(),filter_lookup, result, already_added)
+					for _, e in pairs(ent:GetChildren()) do
+						getConnectedEx( e, filter_lookup, result, already_added )
+					end
+				end
+		
+				if filter_lookup.Wires then -- add wired entities
+					for _, i in pairs(ent.Inputs or {}) do
+						getConnectedEx( i.Src, filter_lookup, result, already_added )
+					end
+		
+					for _, o in pairs(ent.Outputs or {}) do
+						getConnectedEx( o.Src, filter_lookup, result, already_added )
+					end
+				end
+			end
+		
+			for _, con in pairs( ent.Constraints or {} ) do -- add constrained entities
+				if IsValid(con) then
+					if filter_lookup and not checkFilter(con.Type,filter_lookup) then -- skip if it doesn't match the filter
+						continue
+					end
+		
+					for i=1, 6 do
+						getConnectedEx( con["Ent"..i], filter_lookup, result, already_added )
+					end
+				end
+			end
+		
+			return result
+		end
+		local contraption = getConnectedEntities(baseEntity, buildFilter({"all"}))
 
 		local planes = {}
 
@@ -194,12 +293,12 @@ if SERVER then
 			local tbl = self:BuildGateTable(trace.Entity)
 
 			-- todo
-			net.Start("FPGA_OpenEditor") net.WriteTable(tbl) net.Send(self:GetOwner())
+			net.Start("FPGA_Convert") net.WriteTable(tbl) net.Send(self:GetOwner())
 			return true
 		end
 
 
-		net.Start("FPGA_OpenEditor") net.WriteTable({}) net.Send(self:GetOwner())
+		net.Start("FPGA_OpenEditor") net.Send(self:GetOwner())
 		return false
 	end
 
@@ -297,7 +396,7 @@ if SERVER then
 	-- Serverside Receive
 	--------------------------------------------------------------
 	-- Receive FPGA data from client
-	net.Receive("FPGA_Upload",function(len, ply)
+	net.Receive("FPGA_Upload", function(len, ply)
 		local chip = net.ReadEntity()
 		--local numpackets = net.ReadUInt(16)
 	
@@ -336,7 +435,13 @@ if CLIENT then
 		end
 		FPGA_Editor:Open()
 	end
-	local function FPGA_OpenEditor_ex()
+
+	net.Receive("FPGA_OpenEditor", FPGA_OpenEditor)
+
+	------------------------------------------------------------------------------
+	-- Convert Gate Network
+	------------------------------------------------------------------------------
+	net.Receive("FPGA_Convert", function(len, ply)
 		local planes = net.ReadTable()
 		FPGA_OpenEditor()
 
@@ -526,9 +631,7 @@ if CLIENT then
 				end
 			end
 		end
-	end
-
-	net.Receive("FPGA_OpenEditor", FPGA_OpenEditor_ex)
+	end)
 
 	------------------------------------------------------------------------------
 	-- Build tool control panel
