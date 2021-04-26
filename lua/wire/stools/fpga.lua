@@ -63,6 +63,124 @@ if SERVER then
 		self:Upload(ent)
 	end
 
+	function TOOL:BuildGateTable(baseEntity)
+		-- remember to put "getConnectedEntities" and "buildFilter" into "E2Lib" before using this (todo: name buildFilter something better than this)
+		local contraption = E2Lib.getConnectedEntities(baseEntity, E2Lib.getConnectedEntities_buildFilter({"all"}))
+
+		local planes = {}
+
+		local allgates = {}
+		for i=1,#contraption do
+			local ent = contraption[i]
+			if IsValid(ent) and ent:GetClass() == "gmod_wire_gate" then
+				allgates[ent] = true
+			end
+		end
+
+		local function newPlane(pos, up, forward)
+			local plane = {
+				pos = pos,
+				up = up,
+				forward = forward,
+				gates = {}
+			}
+
+			planes[#planes+1] = plane
+			return plane
+		end
+
+		-- distance to plane
+		local function distanceToPlane(plane, pos)
+			return plane.up:Dot(pos-plane.pos)
+		end
+
+		local function projectToPlane(plane, pos)
+			local dist = distanceToPlane(plane, pos)
+
+			local projectedPoint = pos - plane.up * dist
+			local rotatedPoint = WorldToLocal(projectedPoint, Angle(), plane.pos, plane.forward:AngleEx(plane.up))
+
+			return {x = math.Round(rotatedPoint.x,2), y = math.Round(rotatedPoint.y,2)}
+		end
+
+		-- returns difference in plane's normal vs gate's up direction in radians
+		local function normDiff(plane, up)
+			local angle = math.acos(plane.up:Dot(up))
+			if angle ~= angle then return 0 end -- if it's not equal to itself then it's NaN
+			return angle 
+		end
+
+		local maxNormDiff = math.rad(10) -- convert 10 degrees to radians
+
+		local function getMatchingPlane(entPos, entUp, entForward)
+
+			for i=1,#planes do
+				if math.abs(distanceToPlane(planes[i], entPos)) < 20 and
+					normDiff(planes[i], entUp) <maxNormDiff  then 
+						return planes[i]
+				end
+			end
+
+			return newPlane(entPos, entUp, entForward)
+		end
+
+		local function getGateInfo(plane, ent, projectedPos)
+			local gate = {
+				id = ent:EntIndex(),
+				action = ent.action,
+				pos = projectedPos
+			}
+
+			if ent.Inputs then
+				gate.inputs = {}
+				for inputname, inputdata in pairs(ent.Inputs) do
+					if inputdata.Src and IsValid(inputdata.Src) then
+						gate.inputs[inputname] = {
+							src = inputdata.Src:EntIndex(),
+							name = inputdata.SrcId
+						}
+					end
+				end
+				if not next(gate.inputs) then gate.inputs = nil end
+			end
+
+			if ent.Outputs then
+				gate.outputs = {}
+				for outputname, outputdata in pairs(ent.Outputs) do
+					local needsoutput = false
+					for i=1,#outputdata.Connected do
+						if not allgates[outputdata.Connected[i].Entity] then
+							needsoutput = true
+							break
+						end
+					end
+
+					if needsoutput then
+						gate.outputs[outputname] = true
+					end
+				end
+				if not next(gate.outputs) then gate.outputs = nil end
+			end
+
+			return gate
+		end
+
+		for i=1,#contraption do
+			local ent = contraption[i]
+			if IsValid(ent) and ent:GetClass() == "gmod_wire_gate" then
+				local entPos = baseEntity:WorldToLocal(ent:GetPos())
+				local entUp = baseEntity:WorldToLocal(ent:GetUp()*10000 + baseEntity:GetPos()):GetNormalized() -- using *10000 & normalized fixes some rounding errors
+				local entForward = baseEntity:WorldToLocal(ent:GetForward()*10000 + baseEntity:GetPos()):GetNormalized()
+
+				local plane = getMatchingPlane(entPos, entUp, entForward)
+				local projectedPos = projectToPlane(plane, entPos)
+				plane.gates[#plane.gates+1] = getGateInfo(plane, ent, projectedPos)
+			end
+		end
+
+		return planes
+	end
+
 	-- Open editor
 	function TOOL:RightClick(trace)
 		if trace.Entity:IsPlayer() then return false end
@@ -72,7 +190,16 @@ if SERVER then
 			return true
 		end
 
-		net.Start("FPGA_OpenEditor") net.Send(self:GetOwner())
+		if IsValid(trace.Entity) and trace.Entity:GetClass() == "gmod_wire_gate" then
+			local tbl = self:BuildGateTable(trace.Entity)
+
+			-- todo
+			net.Start("FPGA_OpenEditor") net.WriteTable(tbl) net.Send(self:GetOwner())
+			return true
+		end
+
+
+		net.Start("FPGA_OpenEditor") net.WriteTable({}) net.Send(self:GetOwner())
 		return false
 	end
 
@@ -209,7 +336,199 @@ if CLIENT then
 		end
 		FPGA_Editor:Open()
 	end
-	net.Receive("FPGA_OpenEditor", FPGA_OpenEditor)
+	local function FPGA_OpenEditor_ex()
+		local planes = net.ReadTable()
+		FPGA_OpenEditor()
+
+		if planes and next(planes) ~= nil then
+			FPGA_Editor:NewChip(false)
+			local editor = FPGA_Editor:GetCurrentEditor()
+
+			local function rectanglesIntersect(minAx, minAy, maxAx, maxAy,
+											   minBx, minBy, maxBx, maxBy)
+				-- https://stackoverflow.com/a/16012490
+				local aLeftOfB = maxAx < minBx;
+				local aRightOfB = minAx > maxBx;
+				local aAboveB = minAy > maxBy;
+				local aBelowB = maxAy < minBy;
+
+				return not (aLeftOfB or aRightOfB or aAboveB or aBelowB)
+			end
+
+			local already_placed = {}
+			local all_gates = {}
+
+			local GATE_PADDING = 8
+			local PLANE_PADDING = FPGANodeSize + 5
+			local inputsPosOffset, outputsPosOffset = 0, 0
+
+			-- create gates at the correct positions
+			for _, plane in pairs(planes) do
+				-- these values determine the size of the plane
+				local minx, miny, maxx, maxy = 0,0,0,0
+				local maxGateHeight = 0
+
+				for _, gate in pairs(plane.gates) do
+					-- calculate size
+					minx = math.min(minx,gate.pos.x)
+					miny = math.min(miny,gate.pos.y)
+					maxx = math.max(maxx,gate.pos.x)
+					maxy = math.max(maxy,gate.pos.y)
+					maxGateHeight = math.max(gate.inputs and #gate.inputs or 1, gate.outputs and #gate.outputs or 1) * FPGANodeSize
+
+					editor:CreateNode({
+						type = "wire",
+						gate = gate.action
+					},gate.pos.x,gate.pos.y)
+					gate.fpga_gate = editor.Nodes[#editor.Nodes]
+					gate.fpga_nodeid = #editor.Nodes
+					all_gates[gate.id] = gate
+				end
+
+				-- determine zoom level (if necessary)
+				-- this is useful if all the gates use a nano model so they're far too close to each other to be visible
+				local zoom = math.max(1,
+					(#plane.gates * FPGANodeSize / (maxx-minx)),
+					maxGateHeight / (maxy-miny))
+
+				minx = minx * zoom - GATE_PADDING
+				miny = miny * zoom - GATE_PADDING
+				maxx = maxx * zoom + GATE_PADDING
+				maxy = maxy * zoom + GATE_PADDING
+
+				-- calculate relative direction
+				local posx = -plane.pos.x
+				local posy = plane.pos.y
+				local dist = math.sqrt(posx*posx+posy*posy)
+				local posx_norm = posx / dist
+				local posy_norm = posy / dist
+
+				-- after getting direction, reset position to center and allow collision detection below to move it out of the way as necessary
+				posx = 0
+				posy = 0
+
+				-- collision detection
+				for k=1,#already_placed do
+					local v = already_placed[k]
+
+					if rectanglesIntersect(
+						posx+minx-PLANE_PADDING,
+						posy+miny-PLANE_PADDING,
+						posx+maxx+PLANE_PADDING,
+						posy+maxy+PLANE_PADDING,
+						
+						v.posx+v.minx-PLANE_PADDING,
+						v.posy+v.miny-PLANE_PADDING,
+						v.posx+v.maxx+PLANE_PADDING,
+						v.posy+v.maxy+PLANE_PADDING) then
+
+						posx = posx + posx_norm * ((maxx-minx+PLANE_PADDING)/2 + (v.maxx-v.minx+PLANE_PADDING)/2 + PLANE_PADDING)
+						posy = posy + posy_norm * ((maxy-miny+PLANE_PADDING)/2 + (v.maxy-v.miny+PLANE_PADDING)/2 + PLANE_PADDING)
+					end
+				end
+
+				already_placed[#already_placed+1] = {minx = minx, miny = miny, maxx = maxx, maxy = maxy, posx = posx, posy = posy}
+
+				outputsPosOffset = math.min(outputsPosOffset, miny - PLANE_PADDING * 2)
+
+				-- move gates to new positions
+				for _, gate in pairs(plane.gates) do
+					gate.fpga_gate.x = -gate.pos.x * zoom + posx
+					gate.fpga_gate.y = gate.pos.y * zoom + posy
+				end
+			end
+
+			local function portNameToNumber(action,name,what)
+				what = what or "inputs"
+				if not action[what] then return 1 end
+
+				if type(action[what]) == "table" then
+					for i=1,#action[what] do
+						if action[what][i] == name then return i end
+					end
+				end
+
+				return 1
+			end
+
+			local function getPortType(action,id,what)
+				what = what or "inputtypes"
+				if not action[what] then return "normal" end
+				return action[what][id] or "normal"
+			end
+
+			local function getDisplayName(entindex)
+				local ent = Entity(entindex)
+				if IsValid(ent) then
+					local name = ent:GetNWString("WireName")
+					if not name or name == "" then
+						return ent.PrintName 
+					else 
+						return name
+					end
+				end
+			end
+
+			local numInputs, numOutputs = 0, 0
+			inputsPosOffset = outputsPosOffset - PLANE_PADDING * 2
+
+			-- set up wiring
+			for entindex, gate in pairs(all_gates) do
+				local action = GateActions[gate.action]
+				if not action then continue end
+
+				-- step through all inputs
+				if gate.inputs then
+					for inputname, input in pairs(gate.inputs) do
+						local inputNum = portNameToNumber(action,inputname)
+						if not inputNum then continue end
+
+						local target = all_gates[input.src]
+						if not target then
+							-- no gate found, this is an input arriving from outside fpga
+							local typename = string.lower(getPortType(action,inputNum)) .. "-input"
+							if not FPGAGateActions[typename] then continue end
+
+							editor:CreateNode({
+								type = "fpga",
+								gate = typename
+							},numInputs * (FPGANodeSize + GATE_PADDING),inputsPosOffset)
+							gate.fpga_gate.connections[inputNum] = { #editor.Nodes, 1 }
+							numInputs = numInputs + 1
+							local node = editor.Nodes[#editor.Nodes]
+							local newIoName = getDisplayName(input.src)
+							if newIoName and newIoName ~= "" then node.ioName = newIoName .. " " .. numInputs end
+						else
+							local outputAction = GateActions[target.action]
+							if not outputAction then continue end
+							local outputNum = portNameToNumber(outputAction,input.name,"outputs")
+							gate.fpga_gate.connections[inputNum] = { target.fpga_nodeid, outputNum }
+						end
+					end
+				end
+
+				if gate.outputs then
+					-- outputs are always assumed to be leading outside of fpga
+					for outputname, output in pairs(gate.outputs) do
+						local outputNum = portNameToNumber(action,outputname,"outputs")
+						if not outputNum then continue end
+
+						local typename = string.lower(getPortType(action,inputNum,"outputtypes")) .. "-output"
+						if not FPGAGateActions[typename] then continue end
+
+						editor:CreateNode({
+							type = "fpga",
+							gate = typename
+						},numOutputs * (FPGANodeSize + GATE_PADDING),outputsPosOffset)
+						editor.Nodes[#editor.Nodes].connections[1] = { gate.fpga_nodeid, outputNum }
+						numOutputs = numOutputs + 1
+					end
+				end
+			end
+		end
+	end
+
+	net.Receive("FPGA_OpenEditor", FPGA_OpenEditor_ex)
 
 	------------------------------------------------------------------------------
 	-- Build tool control panel
