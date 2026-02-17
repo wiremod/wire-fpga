@@ -1,3 +1,6 @@
+# NOTICE: WIRE FPGA HAS BEEN MERGED INTO MAINLINE WIRE WHERE IT WILL CONTINUE TO BE UPDATED AND MAINTAINED. THIS REPOSITORY IS NOW ARCHIVED.
+
+
 # Wire-FPGA
 
 Adds a field programmable gate array for use with Wiremod (https://github.com/wiremod/wire)
